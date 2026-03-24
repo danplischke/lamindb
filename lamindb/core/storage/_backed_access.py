@@ -8,6 +8,7 @@ import h5py
 from anndata._io.specs.registry import get_spec
 
 from ._anndata_accessor import AnnDataAccessor, StorageType, registry
+from ._duckdb_relation import DUCKDB_SUFFIXES, _open_duckdb_relation
 from ._polars_lazy_df import POLARS_SUFFIXES, _open_polars_lazy_df
 from ._pyarrow_dataset import PYARROW_SUFFIXES, _open_pyarrow_dataset
 from ._spatialdata_accessor import SpatialDataAccessor
@@ -17,6 +18,7 @@ from .paths import filepath_from_artifact
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from duckdb import DuckDBPyRelation
     from fsspec.core import OpenFile
     from polars import LazyFrame as PolarsLazyFrame
     from pyarrow.dataset import Dataset as PyArrowDataset
@@ -77,7 +79,7 @@ class BackedAccessor:
 def backed_access(
     artifact_or_filepath: Artifact | UPath,
     mode: str = "r",
-    engine: Literal["pyarrow", "polars"] = "pyarrow",
+    engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
     using_key: str | None = None,
     **kwargs,
 ) -> (
@@ -89,6 +91,7 @@ def backed_access(
     | SOMAMeasurement
     | PyArrowDataset
     | Iterator[PolarsLazyFrame]
+    | Iterator[DuckDBPyRelation]
 ):
     from lamindb.models import Artifact
 
@@ -116,12 +119,12 @@ def backed_access(
             return SpatialDataAccessor(storage, name, artifact)
     elif len(df_suffixes := _flat_suffixes(objectpath)) == 1 and (
         df_suffix := df_suffixes.pop()
-    ) in set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES):
+    ) in set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES).union(DUCKDB_SUFFIXES):
         return _open_dataframe(objectpath, df_suffix, engine, **kwargs)
     else:
         raise ValueError(
             "The object should have .h5, .hdf5, .h5ad, .zarr, .tiledbsoma suffix "
-            f"be compatible with pyarrow.dataset.dataset or polars.scan_* functions, "
+            f"be compatible with pyarrow.dataset.dataset, polars.scan_*, or duckdb.read_* functions, "
             f"instead of being {suffix} object."
         )
 
@@ -168,12 +171,12 @@ def _flat_suffixes(paths: UPath | list[UPath]) -> set[str]:
 def _open_dataframe(
     paths: UPath | list[UPath],
     suffix: str | None = None,
-    engine: Literal["pyarrow", "polars"] = "pyarrow",
+    engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
     **kwargs,
-) -> PyArrowDataset | Iterator[PolarsLazyFrame]:
-    if engine not in {"pyarrow", "polars"}:
+) -> PyArrowDataset | Iterator[PolarsLazyFrame] | Iterator[DuckDBPyRelation]:
+    if engine not in {"pyarrow", "polars", "duckdb"}:
         raise ValueError(
-            f"Unknown engine: {engine}. It should be 'pyarrow' or 'polars'."
+            f"Unknown engine: {engine}. It should be 'pyarrow', 'polars', or 'duckdb'."
         )
 
     df_suffix: str
@@ -182,7 +185,7 @@ def _open_dataframe(
         if len(df_suffixes) > 1:
             raise ValueError(
                 f"The artifacts in the collection have different file formats: {', '.join(df_suffixes)}.\n"
-                "It is not possible to open such stores with pyarrow or polars."
+                "It is not possible to open such stores with pyarrow, polars, or duckdb."
             )
         df_suffix = df_suffixes.pop()
     else:
@@ -198,11 +201,18 @@ def _open_dataframe(
             f"{df_suffix} files are not supported by polars, "
             f"they should have one of these formats: {', '.join(POLARS_SUFFIXES)}."
         )
+    elif engine == "duckdb" and df_suffix not in DUCKDB_SUFFIXES:
+        raise ValueError(
+            f"{df_suffix} files are not supported by duckdb, "
+            f"they should have one of these formats: {', '.join(DUCKDB_SUFFIXES)}."
+        )
 
     polars_without_fsspec = engine == "polars" and not kwargs.get("use_fsspec", False)
-    if (engine == "pyarrow" or polars_without_fsspec) and not isinstance(paths, Path):
+    if (engine in {"pyarrow", "duckdb"} or polars_without_fsspec) and not isinstance(
+        paths, Path
+    ):
         # this checks that the filesystem is the same for all paths
-        # this is a requirement of pyarrow.dataset.dataset
+        # this is a requirement of pyarrow.dataset.dataset and duckdb
         fs = getattr(paths[0], "fs", None)
         for path in paths[1:]:
             # this assumes that the filesystems are cached by fsspec
@@ -210,15 +220,16 @@ def _open_dataframe(
                 engine_msg = (
                     "polars engine without passing `use_fsspec=True`"
                     if engine == "polars"
-                    else "pyarrow engine"
+                    else f"{engine} engine"
                 )
                 raise ValueError(
                     "The collection has artifacts with different filesystems, "
                     f"this is not supported for {engine_msg}."
                 )
 
-    return (
-        _open_pyarrow_dataset(paths, **kwargs)
-        if engine == "pyarrow"
-        else _open_polars_lazy_df(paths, **kwargs)
-    )
+    if engine == "pyarrow":
+        return _open_pyarrow_dataset(paths, **kwargs)
+    elif engine == "duckdb":
+        return _open_duckdb_relation(paths, **kwargs)
+    else:
+        return _open_polars_lazy_df(paths, **kwargs)

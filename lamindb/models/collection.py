@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
     import anndata as ad
     import pandas as pd
+    from duckdb import DuckDBPyRelation
     from polars import LazyFrame as PolarsLazyFrame
     from pyarrow.dataset import Dataset as PyArrowDataset
 
@@ -398,20 +399,20 @@ class Collection(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
 
     def open(
         self,
-        engine: Literal["pyarrow", "polars"] = "pyarrow",
+        engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
         is_run_input: bool | None = None,
         **kwargs,
-    ) -> PyArrowDataset | Iterator[PolarsLazyFrame]:
+    ) -> PyArrowDataset | Iterator[PolarsLazyFrame] | Iterator[DuckDBPyRelation]:
         """Open a dataset for streaming.
 
-        Works for `pyarrow` and `polars` compatible formats
+        Works for `pyarrow`, `polars`, and `duckdb` compatible formats
         (`.parquet`, `.csv`, `.ipc` etc. files or directories with such files).
 
         Args:
             engine: Which module to use for lazy loading of a dataframe
-                from `pyarrow` or `polars` compatible formats.
+                from `pyarrow`, `polars`, or `duckdb` compatible formats.
             is_run_input: Whether to track this artifact as run input.
-            **kwargs: Keyword arguments for `pyarrow.dataset.dataset` or `polars.scan_*` functions.
+            **kwargs: Keyword arguments for `pyarrow.dataset.dataset`, `polars.scan_*`, or `duckdb.read_*` functions.
 
         Notes:
             For more info, see guide: :doc:`/arrays`.

@@ -132,6 +132,7 @@ if TYPE_CHECKING:
 
     import pandas as pd
     from anndata import AnnData
+    from duckdb import DuckDBPyRelation
     from lamindb_setup.types import UPathStr
     from mudata import MuData  # noqa: TC004
     from polars import LazyFrame as PolarsLazyFrame
@@ -2635,7 +2636,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
     def open(
         self,
         mode: str = "r",
-        engine: Literal["pyarrow", "polars"] = "pyarrow",
+        engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
         is_run_input: bool | None = None,
         **kwargs,
     ) -> (
@@ -2644,6 +2645,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         | Iterator[
             PolarsLazyFrame
         ]  # note that intersphinx doesn't work for this, hence manual docs link: https://github.com/laminlabs/lamindb/issues/2736#issuecomment-3703889524
+        | Iterator[DuckDBPyRelation]
         | AnnDataAccessor  # AnnDataAccessor implements the context manager protocol
         | SpatialDataAccessor
         | BackedAccessor
@@ -2666,17 +2668,18 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 `"r"` or `"r+"` for `AnnData` or `SpatialData` `zarr` stores,
                 otherwise should be always `"r"` (read-only mode).
             engine: Which module to use for lazy loading of a dataframe
-                from `pyarrow` or `polars` compatible formats.
+                from `pyarrow`, `polars`, or `duckdb` compatible formats.
                 This has no effect if the artifact is not a dataframe, i.e.
                 if it is an `AnnData,` `hdf5`, `zarr`, `tiledbsoma` object etc.
             is_run_input: Whether to track this artifact as run input.
             **kwargs: Keyword arguments for the accessor, i.e. `h5py` or `zarr` connection,
-                `pyarrow.dataset.dataset`, `polars.scan_*` function.
+                `pyarrow.dataset.dataset`, `polars.scan_*`, or `duckdb.read_*` function.
 
         Returns:
             Streaming accessors, in particular,
             a :class:`pyarrow:pyarrow.dataset.Dataset` object,
             a context manager yielding a `polars.LazyFrame <https://docs.pola.rs/api/python/stable/reference/lazyframe/>`__,
+            a context manager yielding a `duckdb.DuckDBPyRelation <https://duckdb.org/docs/api/python/relational_api>`__,
             and objects of type :class:`~lamindb.core.storage.AnnDataAccessor`, :class:`~lamindb.core.storage.SpatialDataAccessor`, :class:`~lamindb.core.storage.BackedAccessor`,
             :class:`tiledbsoma:tiledbsoma.Collection`, :class:`tiledbsoma.Experiment`, :class:`tiledbsoma.Measurement`.
 
@@ -2700,6 +2703,13 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 with artifact.open(engine="polars") as df:
                     # use the `polars.LazyFrame` object similar to a `DataFrame` object
 
+            Open a `DataFrame`-like artifact via `duckdb.DuckDBPyRelation <https://duckdb.org/docs/api/python/relational_api>`__::
+
+                artifact = ln.Artifact.get(key="sequences/mydataset.parquet")
+                with artifact.open(engine="duckdb") as rel:
+                    # use SQL or the relational API
+                    rel.filter("column > 5").limit(10).df()
+
             Open an `AnnData`-like artifact via :class:`~lamindb.core.storage.AnnDataAccessor`::
 
                 import lamindb as ln
@@ -2712,6 +2722,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
 
         """
         from ..core.storage._backed_access import _track_writes_factory, backed_access
+        from ..core.storage._duckdb_relation import DUCKDB_SUFFIXES
         from ..core.storage._polars_lazy_df import POLARS_SUFFIXES
         from ..core.storage._pyarrow_dataset import PYARROW_SUFFIXES
 
@@ -2723,7 +2734,9 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         for s in h5_suffixes:
             h5_gz_suffixes += [s, s + ".gz", s + ".tar.gz"]
         # ignore empty suffix for now
-        df_suffixes = tuple(set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES))
+        df_suffixes = tuple(
+            set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES).union(DUCKDB_SUFFIXES)
+        )
         suffixes = (
             (
                 "",
@@ -2738,7 +2751,8 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         if suffix not in suffixes:
             raise ValueError(
                 "Artifact should have a zarr, h5, tiledbsoma object"
-                " or a compatible `pyarrow.dataset.dataset` or `polars.scan_*` directory"
+                " or a compatible `pyarrow.dataset.dataset`, `polars.scan_*`,"
+                " or `duckdb.read_*` directory"
                 " as the underlying data, please use one of the following suffixes"
                 f" for the object name: {', '.join(suffixes[1:])}."
                 f" Or no suffix for a folder with {', '.join(df_suffixes)} files"
