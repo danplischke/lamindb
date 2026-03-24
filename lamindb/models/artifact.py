@@ -169,6 +169,28 @@ INCONSISTENT_STATE_MSG = (
 )
 
 
+def _resolve_storage_for_space(space) -> Storage:
+    """Find the storage location for a given space.
+
+    Raises :class:`~lamindb.errors.NoStorageLocationForSpace` if no storage
+    location is associated with the space.
+    """
+    storage_locs_for_space = Storage.filter(space=space)
+    n_storage_locs_for_space = len(storage_locs_for_space)
+    if n_storage_locs_for_space == 0:
+        raise NoStorageLocationForSpace(
+            "No storage location found for space.\n"
+            "Either create one via ln.Storage(root='create-s3', space=space).save()\n"
+            "Or start managing access to an existing storage location via the space: storage_loc.space = space; storage.save()"
+        )
+    storage = storage_locs_for_space.first()
+    if n_storage_locs_for_space > 1:
+        logger.warning(
+            f"more than one storage location for space {space}, choosing {storage}"
+        )
+    return storage
+
+
 def process_pathlike(
     filepath: UPath,
     storage: Storage,
@@ -1655,20 +1677,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 logger.warning(
                     "storage argument ignored as storage information from space takes precedence"
                 )
-            storage_locs_for_space = Storage.filter(space=space)
-            n_storage_locs_for_space = len(storage_locs_for_space)
-            if n_storage_locs_for_space == 0:
-                raise NoStorageLocationForSpace(
-                    "No storage location found for space.\n"
-                    "Either create one via ln.Storage(root='create-s3', space=space).save()\n"
-                    "Or start managing access to an existing storage location via the space: storage_loc.space = space; storage.save()"
-                )
-            else:
-                storage = storage_locs_for_space.first()
-                if n_storage_locs_for_space > 1:
-                    logger.warning(
-                        f"more than one storage location for space {space}, choosing {storage}"
-                    )
+            storage = _resolve_storage_for_space(space)
         otype = kwargs.pop("otype") if "otype" in kwargs else None
         if isinstance(path, str) and path.startswith("s3:///"):
             # issue in Groovy / nf-lamin producing malformed S3 paths
@@ -3016,14 +3025,29 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         """
         # when space is passed in init, storage is ignored, so space - storage consistency is enforced there
         # note that storage is not editable after creation
-        if (
-            self._field_changed("space_id")
-            and (artifact_storage := self.storage).instance_uid is not None
-            and artifact_storage.space_id == self._original_values["space_id"]
-        ):
-            raise ValueError(
-                "Space cannot be changed because the artifact is in the storage location of another space."
-            )
+        if self._field_changed("space_id"):
+            from .sqlrecord import Space
+
+            new_space = Space.objects.get(id=self.space_id)
+            new_storage = _resolve_storage_for_space(new_space)
+
+            if new_storage.id != self.storage_id:
+                # need to physically move the file to the new space's storage
+                from ..core.storage import paths
+
+                old_storage_id = self.storage_id
+                self.storage_id = new_storage.id
+                print_progress_move = kwargs.get("print_progress", True)
+                paths.move_artifact_storage(
+                    self,
+                    old_storage_id=old_storage_id,
+                    new_storage_id=new_storage.id,
+                    using_key=kwargs.get("using", None),
+                    print_progress=print_progress_move,
+                )
+                logger.important(
+                    f"moved artifact '{self.uid}' to storage '{new_storage.root}'"
+                )
 
         if transfer not in {"record", "annotations"}:
             raise ValueError(

@@ -182,6 +182,44 @@ def store_file_or_folder(
             shutil.copytree(local_path, storage_path)
 
 
+def move_artifact_storage(
+    artifact: Artifact,
+    old_storage_id: int,
+    new_storage_id: int,
+    using_key: str | None = None,
+    print_progress: bool = True,
+) -> None:
+    """Move an artifact's files from one storage location to another.
+
+    Takes explicit storage IDs rather than reading from artifact.storage_id
+    to avoid ordering issues (storage_id may already be updated on the artifact).
+    """
+    from lamindb.models import Storage
+
+    storage_key = auto_storage_key_from_artifact(artifact)
+
+    # resolve old path
+    old_storage = Storage.objects.using(using_key).get(id=old_storage_id)
+    old_storage_settings = StorageSettings(old_storage.root)
+    old_path = old_storage_settings.key_to_filepath(storage_key)
+
+    # resolve new path
+    new_storage = Storage.objects.using(using_key).get(id=new_storage_id)
+    new_storage_settings = StorageSettings(new_storage.root)
+    new_path = new_storage_settings.key_to_filepath(storage_key)
+
+    # go through local for the copy (handles all combos: local↔local, cloud↔cloud, etc.)
+    if isinstance(old_path, LocalPathClasses):
+        local_source = old_path
+    else:
+        local_source = old_storage_settings.cloud_to_local(
+            old_path, print_progress=print_progress
+        )
+
+    store_file_or_folder(local_source, new_path, print_progress=print_progress)
+    delete_storage(old_path)
+
+
 def delete_storage_using_key(
     artifact: Artifact,
     storage_key: str,
