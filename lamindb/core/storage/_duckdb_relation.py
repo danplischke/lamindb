@@ -83,8 +83,20 @@ def _configure_gcs(conn: DuckDBPyConnection, storepath: UPath) -> None:
 
 @contextmanager
 def _open_duckdb_relation(
-    paths: UPath | list[UPath], **kwargs
+    paths: UPath | list[UPath],
+    conn: DuckDBPyConnection | None = None,
+    **kwargs,
 ) -> Iterator[DuckDBPyRelation]:
+    """Open paths as a DuckDB relation.
+
+    Args:
+        paths: One or more UPath objects pointing to data files.
+        conn: An existing DuckDB connection to use. If ``None``, an ephemeral
+            in-memory connection is created and closed when the context manager
+            exits. If provided, the caller owns the connection and it will
+            **not** be closed on exit.
+        **kwargs: Passed to the underlying ``read_parquet``/``read_csv``/``read_json`` call.
+    """
     try:
         import duckdb
     except ImportError as ie:
@@ -105,7 +117,9 @@ def _open_duckdb_relation(
     path0 = path_list[0]
     protocol = getattr(path0, "protocol", "file")
 
-    conn = duckdb.connect()
+    owns_conn = conn is None
+    if owns_conn:
+        conn = duckdb.connect()
     try:
         if protocol == "s3":
             conn.execute("INSTALL httpfs; LOAD httpfs")
@@ -130,4 +144,5 @@ def _open_duckdb_relation(
                 f"they should have one of these formats: {', '.join(DUCKDB_SUFFIXES)}."
             )
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

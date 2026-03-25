@@ -2683,6 +2683,9 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
             is_run_input: Whether to track this artifact as run input.
             **kwargs: Keyword arguments for the accessor, i.e. `h5py` or `zarr` connection,
                 `pyarrow.dataset.dataset`, `polars.scan_*`, or `duckdb.read_*` function.
+                For `engine="duckdb"`, you can pass ``conn`` with an existing
+                `duckdb.DuckDBPyConnection`; the connection will **not** be closed
+                when the context manager exits.
 
         Returns:
             Streaming accessors, in particular,
@@ -2718,6 +2721,14 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 with artifact.open(engine="duckdb") as rel:
                     # use SQL or the relational API
                     rel.filter("column > 5").limit(10).df()
+
+            Pass an existing DuckDB connection (the caller owns its lifecycle)::
+
+                import duckdb
+                conn = duckdb.connect("my.duckdb")
+                with artifact.open(engine="duckdb", conn=conn) as rel:
+                    rel.df()
+                conn.close()
 
             Open an `AnnData`-like artifact via :class:`~lamindb.core.storage.AnnDataAccessor`::
 

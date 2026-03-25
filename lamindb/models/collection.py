@@ -413,6 +413,9 @@ class Collection(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 from `pyarrow`, `polars`, or `duckdb` compatible formats.
             is_run_input: Whether to track this artifact as run input.
             **kwargs: Keyword arguments for `pyarrow.dataset.dataset`, `polars.scan_*`, or `duckdb.read_*` functions.
+                For `engine="duckdb"`, you can pass ``conn`` with an existing
+                `duckdb.DuckDBPyConnection`; the connection will **not** be closed
+                when the context manager exits.
 
         Notes:
             For more info, see guide: :doc:`/arrays`.
