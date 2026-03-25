@@ -176,7 +176,15 @@ def open(filepath: UPathStr, mode: str = "r", compression: str | None = "infer")
         conn_mode = "ab"
     else:
         raise ValueError(f"Unknown mode {mode}! Should be 'r', 'w' or 'a'.")
-    conn = fs.open(file_path_str, mode=conn_mode, compression=compression)
+    # use larger blocks and readahead caching for cloud filesystems to reduce
+    # the number of HTTP round trips during sequential and random access
+    fsspec_kwargs: dict = {}
+    if not isinstance(fs, LocalFileSystem):
+        fsspec_kwargs["block_size"] = 50 * 2**20  # 50 MiB
+        fsspec_kwargs["cache_type"] = "readahead"
+    conn = fs.open(
+        file_path_str, mode=conn_mode, compression=compression, **fsspec_kwargs
+    )
     try:
         storage = h5py.File(conn, mode=mode)
     except Exception as e:

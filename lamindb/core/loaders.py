@@ -24,6 +24,7 @@ from anndata import read_h5ad
 from lamin_utils import logger
 from lamindb_setup import settings as setup_settings
 from lamindb_setup.core.upath import (
+    LocalPathClasses,
     create_path,
     extract_suffix_from_path,
     infer_filesystem,
@@ -202,6 +203,9 @@ def load_to_memory(
             f"There is no loader for {suffix} files. Use .cache() to get the path."
         )
 
-    filepath = setup_settings.paths.cloud_to_local(filepath, print_progress=True)
+    # cloud_to_local is a no-op for local paths; skip the call (and its remote
+    # HEAD request) when the path is already local
+    if not isinstance(filepath, LocalPathClasses):
+        filepath = setup_settings.paths.cloud_to_local(filepath, print_progress=True)
 
     return loader(filepath, **kwargs)
