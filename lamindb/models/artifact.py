@@ -132,6 +132,7 @@ if TYPE_CHECKING:
 
     import pandas as pd
     from anndata import AnnData
+    from duckdb import DuckDBPyRelation
     from lamindb_setup.types import UPathStr
     from mudata import MuData  # noqa: TC004
     from polars import LazyFrame as PolarsLazyFrame
@@ -166,6 +167,28 @@ INCONSISTENT_STATE_MSG = (
     "this can result in an incosistent state.\n"
     "Read from the latest version: artifact.versions.get(is_latest=True)"
 )
+
+
+def _resolve_storage_for_space(space) -> Storage:
+    """Find the storage location for a given space.
+
+    Raises :class:`~lamindb.errors.NoStorageLocationForSpace` if no storage
+    location is associated with the space.
+    """
+    storage_locs_for_space = Storage.filter(space=space)
+    n_storage_locs_for_space = len(storage_locs_for_space)
+    if n_storage_locs_for_space == 0:
+        raise NoStorageLocationForSpace(
+            "No storage location found for space.\n"
+            "Either create one via ln.Storage(root='create-s3', space=space).save()\n"
+            "Or start managing access to an existing storage location via the space: storage_loc.space = space; storage.save()"
+        )
+    storage = storage_locs_for_space.first()
+    if n_storage_locs_for_space > 1:
+        logger.warning(
+            f"more than one storage location for space {space}, choosing {storage}"
+        )
+    return storage
 
 
 def process_pathlike(
@@ -1654,20 +1677,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 logger.warning(
                     "storage argument ignored as storage information from space takes precedence"
                 )
-            storage_locs_for_space = Storage.filter(space=space)
-            n_storage_locs_for_space = len(storage_locs_for_space)
-            if n_storage_locs_for_space == 0:
-                raise NoStorageLocationForSpace(
-                    "No storage location found for space.\n"
-                    "Either create one via ln.Storage(root='create-s3', space=space).save()\n"
-                    "Or start managing access to an existing storage location via the space: storage_loc.space = space; storage.save()"
-                )
-            else:
-                storage = storage_locs_for_space.first()
-                if n_storage_locs_for_space > 1:
-                    logger.warning(
-                        f"more than one storage location for space {space}, choosing {storage}"
-                    )
+            storage = _resolve_storage_for_space(space)
         otype = kwargs.pop("otype") if "otype" in kwargs else None
         if isinstance(path, str) and path.startswith("s3:///"):
             # issue in Groovy / nf-lamin producing malformed S3 paths
@@ -2635,7 +2645,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
     def open(
         self,
         mode: str = "r",
-        engine: Literal["pyarrow", "polars"] = "pyarrow",
+        engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
         is_run_input: bool | None = None,
         **kwargs,
     ) -> (
@@ -2644,6 +2654,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         | Iterator[
             PolarsLazyFrame
         ]  # note that intersphinx doesn't work for this, hence manual docs link: https://github.com/laminlabs/lamindb/issues/2736#issuecomment-3703889524
+        | Iterator[DuckDBPyRelation]
         | AnnDataAccessor  # AnnDataAccessor implements the context manager protocol
         | SpatialDataAccessor
         | BackedAccessor
@@ -2666,17 +2677,21 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 `"r"` or `"r+"` for `AnnData` or `SpatialData` `zarr` stores,
                 otherwise should be always `"r"` (read-only mode).
             engine: Which module to use for lazy loading of a dataframe
-                from `pyarrow` or `polars` compatible formats.
+                from `pyarrow`, `polars`, or `duckdb` compatible formats.
                 This has no effect if the artifact is not a dataframe, i.e.
                 if it is an `AnnData,` `hdf5`, `zarr`, `tiledbsoma` object etc.
             is_run_input: Whether to track this artifact as run input.
             **kwargs: Keyword arguments for the accessor, i.e. `h5py` or `zarr` connection,
-                `pyarrow.dataset.dataset`, `polars.scan_*` function.
+                `pyarrow.dataset.dataset`, `polars.scan_*`, or `duckdb.read_*` function.
+                For `engine="duckdb"`, you can pass ``conn`` with an existing
+                `duckdb.DuckDBPyConnection`; the connection will **not** be closed
+                when the context manager exits.
 
         Returns:
             Streaming accessors, in particular,
             a :class:`pyarrow:pyarrow.dataset.Dataset` object,
             a context manager yielding a `polars.LazyFrame <https://docs.pola.rs/api/python/stable/reference/lazyframe/>`__,
+            a context manager yielding a `duckdb.DuckDBPyRelation <https://duckdb.org/docs/api/python/relational_api>`__,
             and objects of type :class:`~lamindb.core.storage.AnnDataAccessor`, :class:`~lamindb.core.storage.SpatialDataAccessor`, :class:`~lamindb.core.storage.BackedAccessor`,
             :class:`tiledbsoma:tiledbsoma.Collection`, :class:`tiledbsoma.Experiment`, :class:`tiledbsoma.Measurement`.
 
@@ -2700,6 +2715,21 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
                 with artifact.open(engine="polars") as df:
                     # use the `polars.LazyFrame` object similar to a `DataFrame` object
 
+            Open a `DataFrame`-like artifact via `duckdb.DuckDBPyRelation <https://duckdb.org/docs/api/python/relational_api>`__::
+
+                artifact = ln.Artifact.get(key="sequences/mydataset.parquet")
+                with artifact.open(engine="duckdb") as rel:
+                    # use SQL or the relational API
+                    rel.filter("column > 5").limit(10).df()
+
+            Pass an existing DuckDB connection (the caller owns its lifecycle)::
+
+                import duckdb
+                conn = duckdb.connect("my.duckdb")
+                with artifact.open(engine="duckdb", conn=conn) as rel:
+                    rel.df()
+                conn.close()
+
             Open an `AnnData`-like artifact via :class:`~lamindb.core.storage.AnnDataAccessor`::
 
                 import lamindb as ln
@@ -2712,6 +2742,7 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
 
         """
         from ..core.storage._backed_access import _track_writes_factory, backed_access
+        from ..core.storage._duckdb_relation import DUCKDB_SUFFIXES
         from ..core.storage._polars_lazy_df import POLARS_SUFFIXES
         from ..core.storage._pyarrow_dataset import PYARROW_SUFFIXES
 
@@ -2723,7 +2754,9 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         for s in h5_suffixes:
             h5_gz_suffixes += [s, s + ".gz", s + ".tar.gz"]
         # ignore empty suffix for now
-        df_suffixes = tuple(set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES))
+        df_suffixes = tuple(
+            set(PYARROW_SUFFIXES).union(POLARS_SUFFIXES).union(DUCKDB_SUFFIXES)
+        )
         suffixes = (
             (
                 "",
@@ -2738,7 +2771,8 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         if suffix not in suffixes:
             raise ValueError(
                 "Artifact should have a zarr, h5, tiledbsoma object"
-                " or a compatible `pyarrow.dataset.dataset` or `polars.scan_*` directory"
+                " or a compatible `pyarrow.dataset.dataset`, `polars.scan_*`,"
+                " or `duckdb.read_*` directory"
                 " as the underlying data, please use one of the following suffixes"
                 f" for the object name: {', '.join(suffixes[1:])}."
                 f" Or no suffix for a folder with {', '.join(df_suffixes)} files"
@@ -3002,14 +3036,29 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         """
         # when space is passed in init, storage is ignored, so space - storage consistency is enforced there
         # note that storage is not editable after creation
-        if (
-            self._field_changed("space_id")
-            and (artifact_storage := self.storage).instance_uid is not None
-            and artifact_storage.space_id == self._original_values["space_id"]
-        ):
-            raise ValueError(
-                "Space cannot be changed because the artifact is in the storage location of another space."
-            )
+        if self._field_changed("space_id"):
+            from .sqlrecord import Space
+
+            new_space = Space.objects.get(id=self.space_id)
+            new_storage = _resolve_storage_for_space(new_space)
+
+            if new_storage.id != self.storage_id:
+                # need to physically move the file to the new space's storage
+                from ..core.storage import paths
+
+                old_storage_id = self.storage_id
+                self.storage_id = new_storage.id
+                print_progress_move = kwargs.get("print_progress", True)
+                paths.move_artifact_storage(
+                    self,
+                    old_storage_id=old_storage_id,
+                    new_storage_id=new_storage.id,
+                    using_key=kwargs.get("using", None),
+                    print_progress=print_progress_move,
+                )
+                logger.important(
+                    f"moved artifact '{self.uid}' to storage '{new_storage.root}'"
+                )
 
         if transfer not in {"record", "annotations"}:
             raise ValueError(

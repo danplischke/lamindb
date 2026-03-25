@@ -182,6 +182,78 @@ def store_file_or_folder(
             shutil.copytree(local_path, storage_path)
 
 
+def _fsspec_move(old_path: UPath, new_path: UPath) -> bool:
+    """Attempt a native fsspec move (server-side when possible).
+
+    Returns True if the move succeeded, False if the paths use different
+    filesystems and a native move is not possible.
+    """
+    old_protocol = fsspec.utils.get_protocol(str(old_path))
+    new_protocol = fsspec.utils.get_protocol(str(new_path))
+    if old_protocol != new_protocol:
+        return False
+    fs = old_path.fs
+    if old_path.is_dir():
+        for src_file in old_path.rglob("*"):
+            if src_file.is_file():
+                rel = src_file.relative_to(old_path)
+                dst_file = new_path / str(rel)
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                fs.mv(str(src_file), str(dst_file))
+        # remove leftover empty directories
+        delete_storage(old_path, raise_file_not_found_error=False)
+    else:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        fs.mv(str(old_path), str(new_path))
+    return True
+
+
+def move_artifact_storage(
+    artifact: Artifact,
+    old_storage_id: int,
+    new_storage_id: int,
+    using_key: str | None = None,
+    print_progress: bool = True,
+) -> None:
+    """Move an artifact's files from one storage location to another.
+
+    Takes explicit storage IDs rather than reading from artifact.storage_id
+    to avoid ordering issues (storage_id may already be updated on the artifact).
+
+    Uses native fsspec move (server-side copy on S3/GCS) when source and
+    destination share the same protocol. Falls back to download-then-upload
+    for cross-protocol moves.
+    """
+    from lamindb.models import Storage
+
+    storage_key = auto_storage_key_from_artifact(artifact)
+
+    # resolve old path
+    old_storage = Storage.objects.using(using_key).get(id=old_storage_id)
+    old_storage_settings = StorageSettings(old_storage.root)
+    old_path = old_storage_settings.key_to_filepath(storage_key)
+
+    # resolve new path
+    new_storage = Storage.objects.using(using_key).get(id=new_storage_id)
+    new_storage_settings = StorageSettings(new_storage.root)
+    new_path = new_storage_settings.key_to_filepath(storage_key)
+
+    # try native fsspec move first (server-side for same-protocol cloud paths)
+    if not isinstance(old_path, LocalPathClasses) and _fsspec_move(old_path, new_path):
+        return
+
+    # fallback: go through local for cross-protocol or local moves
+    if isinstance(old_path, LocalPathClasses):
+        local_source = old_path
+    else:
+        local_source = old_storage_settings.cloud_to_local(
+            old_path, print_progress=print_progress
+        )
+
+    store_file_or_folder(local_source, new_path, print_progress=print_progress)
+    delete_storage(old_path)
+
+
 def delete_storage_using_key(
     artifact: Artifact,
     storage_key: str,

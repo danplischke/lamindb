@@ -1250,29 +1250,43 @@ def test_save_url_with_virtual_key():
     artifact.delete(permanent=True, storage=False)
 
 
-def test_artifact_space_change(tsv_file):
+def test_artifact_space_change(tsv_file, tmp_path):
     artifact = ln.Artifact(tsv_file, key="test_space_change.tsv").save()
     space = ln.Space(name="test space change", uid="00000234").save()
-    # test after saving
+
+    # test that changing space without a storage location for the new space raises
     artifact.space = space
-    with pytest.raises(ValueError) as err:
+    with pytest.raises(ln.errors.NoStorageLocationForSpace):
         artifact.save()
-    assert (
-        "Space cannot be changed because the artifact is in the storage location of another space."
-        in err.exconly()
-    )
-    # test after getting from the db
+
+    # create a storage location for the new space and test the move
+    new_storage_root = tmp_path / "new_space_storage"
+    new_storage_root.mkdir()
+    new_storage = ln.Storage(root=str(new_storage_root)).save()
+    # directly update space_id in db to avoid hub calls in tests
+    ln.Storage.filter(id=new_storage.id).update(space_id=space.id)
+    new_storage.refresh_from_db()
+
+    # re-fetch artifact to reset tracked fields
     artifact = ln.Artifact.get(key="test_space_change.tsv")
+    old_path = artifact.path
+    assert old_path.exists()
+
     artifact.space = space
-    with pytest.raises(ValueError) as err:
-        artifact.save()
-    assert (
-        "Space cannot be changed because the artifact is in the storage location of another space."
-        in err.exconly()
-    )
+    artifact.save()
+
+    # artifact should now point to the new storage
+    assert artifact.storage_id == new_storage.id
+    new_path = artifact.path
+    assert new_path.exists()
+    # old path should be gone
+    assert not old_path.exists()
 
     artifact.delete(permanent=True)
+    # reset space on storage before deleting space (PROTECT FK)
+    ln.Storage.filter(id=new_storage.id).update(space_id=1)
     space.delete(permanent=True)
+    new_storage.delete(permanent=True)
 
 
 def test_passing_foreign_keys_ids(tsv_file):

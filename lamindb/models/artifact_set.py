@@ -14,6 +14,7 @@ from .collection import Collection, _load_concat_artifacts
 
 if TYPE_CHECKING:
     from anndata import AnnData
+    from duckdb import DuckDBPyRelation
     from lamindb_setup.types import UPathStr
     from pandas import DataFrame
     from polars import LazyFrame as PolarsLazyFrame
@@ -61,10 +62,10 @@ class ArtifactSet(Iterable):
     @doc_args(Collection.open.__doc__)
     def open(
         self,
-        engine: Literal["pyarrow", "polars"] = "pyarrow",
+        engine: Literal["pyarrow", "polars", "duckdb"] = "pyarrow",
         is_run_input: bool | None = None,
         **kwargs,
-    ) -> PyArrowDataset | Iterator[PolarsLazyFrame]:
+    ) -> PyArrowDataset | Iterator[PolarsLazyFrame] | Iterator[DuckDBPyRelation]:
         """{}"""  # noqa: D415
         from ..core.storage._backed_access import _open_dataframe
 

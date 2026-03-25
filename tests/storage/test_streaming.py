@@ -360,6 +360,9 @@ def test_open_dataframe_artifact():
     # polars
     with artifact_file.open(engine="polars") as ldf:
         assert ldf.collect().to_pandas().equals(df)
+    # duckdb
+    with artifact_file.open(engine="duckdb") as rel:
+        assert rel.df().equals(df)
     # wrong engine
     with pytest.raises(ValueError) as err:
         artifact_file.open(engine="some-other-engine")
@@ -424,6 +427,9 @@ def test_open_dataframe_collection():
         assert ldf.collect().to_pandas().equals(df)
     with collection1.open(engine="polars", use_fsspec=True) as ldf:
         assert ldf.collect().to_pandas().equals(df)
+    # duckdb
+    with collection1.open(engine="duckdb") as rel:
+        assert rel.df().equals(df)
     # wrong engine
     with pytest.raises(ValueError) as err:
         collection1.open(engine="some-other-engine")
