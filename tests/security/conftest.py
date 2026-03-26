@@ -8,39 +8,85 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import lamindb_setup as ln_setup
 import pytest
 from lamin_utils._logger import logger
 
-# ---------------------------------------------------------------------------
-# Markers
-# ---------------------------------------------------------------------------
-
 SECURITY_STORAGE = "./test_security_storage"
 
 
-# ---------------------------------------------------------------------------
-# Session-level instance setup / teardown
-# ---------------------------------------------------------------------------
+def _init_instance_offline():
+    """Initialize a local lamindb instance without hub connectivity.
+
+    Patches hub calls so that tests can run in sandboxed / offline
+    environments.
+    """
+    os.environ["LAMIN_TESTING"] = "true"
+    ln_setup._TESTING = True
+
+    # Clean up leftover storage from previous interrupted runs
+    storage_path = Path(SECURITY_STORAGE)
+    if storage_path.exists():
+        shutil.rmtree(storage_path, ignore_errors=True)
+
+    # Patch hub storage check to pretend no hub record exists.
+    # This lets init() proceed with a purely local SQLite instance.
+    with patch(
+        "lamindb_setup.core._hub_core.init_storage_hub",
+        return_value="created",
+    ), patch(
+        "lamindb_setup.core._hub_core.init_instance_hub",
+        return_value=None,
+    ):
+        ln_setup.init(
+            storage=SECURITY_STORAGE,
+            name="lamindb-security-tests",
+        )
+
+    # Permanently patch is_on_hub to return False so that no hub calls
+    # are made during artifact creation / storage operations.
+    from lamindb_setup.core._settings_instance import InstanceSettings
+
+    InstanceSettings.is_on_hub = property(lambda self: False)
+    # Also mark on the storage settings
+    from lamindb_setup.core._settings_storage import StorageSettings
+
+    StorageSettings.is_on_hub = property(lambda self: False)
+
+    # Silence missing-run warnings globally
+    import lamindb as ln
+
+    ln.settings.creation.artifact_silence_missing_run_warning = True
 
 
 def pytest_sessionstart():
-    ln_setup.init(
-        storage=SECURITY_STORAGE,
-        name="lamindb-security-tests",
-    )
-    os.environ["LAMIN_TESTING"] = "true"
-    ln_setup._TESTING = True
+    try:
+        _init_instance_offline()
+    except Exception as e:
+        # If already initialised from a previous interrupted run, just load.
+        try:
+            ln_setup.connect("lamindb-security-tests")
+        except Exception:
+            raise RuntimeError(
+                f"Failed to init lamindb for security tests: {e}"
+            ) from e
 
 
 def pytest_sessionfinish(session: pytest.Session):
     logger.set_verbosity(1)
+    try:
+        with patch(
+            "lamindb_setup.core._hub_core.delete_instance_hub",
+            return_value=None,
+        ):
+            ln_setup.delete("lamindb-security-tests", force=True)
+    except Exception:
+        pass
     if Path(SECURITY_STORAGE).exists():
-        shutil.rmtree(SECURITY_STORAGE)
-    ln_setup.delete("lamindb-security-tests", force=True)
+        shutil.rmtree(SECURITY_STORAGE, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +106,6 @@ def ccaplog(caplog) -> pytest.LogCaptureFixture:
 def tmp_dir(tmp_path):
     """Provide a clean temporary directory for each test."""
     yield tmp_path
-    # tmp_path is auto-cleaned by pytest
 
 
 @pytest.fixture

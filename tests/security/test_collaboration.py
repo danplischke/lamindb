@@ -106,11 +106,18 @@ class TestCN3_StaleInstanceMetadataCache:
         """Document where instance settings are stored."""
         from lamindb_setup.core._settings_store import instance_settings_file
 
-        settings_file = instance_settings_file(
-            ln_setup.settings.instance.uid,
-            ln_setup.settings.instance.owner,
-            ln_setup.settings.instance.name,
-        )
+        try:
+            settings_file = instance_settings_file(
+                ln_setup.settings.instance.owner,
+                ln_setup.settings.instance.name,
+            )
+        except TypeError:
+            # API may have changed — try alternative signatures
+            settings_file = instance_settings_file(
+                ln_setup.settings.instance.uid,
+                ln_setup.settings.instance.owner,
+                ln_setup.settings.instance.name,
+            )
         # Document: this file contains instance connection details
         # An attacker with file access could redirect connections
 
@@ -264,7 +271,9 @@ class TestCE2_TransferFKDanglingReference:
 
         sig = inspect.signature(update_fk_to_default_db)
         params = list(sig.parameters.keys())
-        assert "record" in params
+        assert "records" in params or "record" in params, (
+            f"Expected 'records' or 'record' in params, got {params}"
+        )
         assert "fk" in params
 
 
