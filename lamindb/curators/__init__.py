@@ -4,6 +4,7 @@ High-level curators
 -------------------
 
 .. autoclass:: DataFrameCurator
+.. autoclass:: FolderCurator
 .. autoclass:: AnnDataCurator
 .. autoclass:: MuDataCurator
 .. autoclass:: SpatialDataCurator
@@ -22,6 +23,7 @@ Low-level module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ._folder import FolderCurator
     from .core import (
         AnnDataCurator,
         DataFrameCurator,
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AnnDataCurator",
     "DataFrameCurator",
+    "FolderCurator",
     "MuDataCurator",
     "SpatialDataCurator",
     "TiledbsomaExperimentCurator",
@@ -44,6 +47,11 @@ _CURATOR_NAMES = frozenset(__all__)
 def __getattr__(name: str):
     """Lazy-import curators from core to avoid loading pandas/pandera at import."""
     if name in _CURATOR_NAMES:
+        if name == "FolderCurator":
+            from ._folder import FolderCurator
+
+            globals()[name] = FolderCurator
+            return FolderCurator
         from . import core
 
         attr = getattr(core, name)

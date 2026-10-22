@@ -446,6 +446,7 @@ class Curator:
 
     See:
         - :class:`~lamindb.curators.DataFrameCurator`
+        - :class:`~lamindb.curators.FolderCurator`
         - :class:`~lamindb.curators.AnnDataCurator`
         - :class:`~lamindb.curators.MuDataCurator`
         - :class:`~lamindb.curators.SpatialDataCurator`
@@ -2838,7 +2839,10 @@ def annotate_artifact(
             # var_index is backward compat (2025-05-01)
             name = (
                 "var_index"
-                if (slot == "var" and "var_index" in slot_curator.cat._cat_vectors)
+                if (
+                    "columns" not in slot_curator.cat._cat_vectors
+                    and "var_index" in slot_curator.cat._cat_vectors
+                )
                 else "columns"
             )
             features = slot_curator.cat._cat_vectors[name].records
@@ -2870,11 +2874,10 @@ def annotate_artifact(
                 )
                 itype = (
                     Feature.name
-                    if artifact.schema.slots[slot].itype
-                    == "Composite"  # backward compat
-                    else parse_cat_dtype(
-                        artifact.schema.slots[slot].itype, is_itype=True
-                    )["field"]
+                    if validating_schema.itype == "Composite"  # backward compat
+                    else parse_cat_dtype(validating_schema.itype, is_itype=True)[
+                        "field"
+                    ]
                 )
                 feature_set = Schema(itype=itype, n_members=len(features))
             ArtifactSchema.objects.update_or_create(
@@ -2886,6 +2889,8 @@ def annotate_artifact(
                     else feature_set
                 },
             )
+        # after the updates so that a failure leaves the previous links in place
+        artifact._links_schema.exclude(slot__in=list(curator._slots)).delete()
 
     slug = ln_setup.settings.instance.slug
     if ln_setup.settings.instance.is_remote:  # pdagma: no cover

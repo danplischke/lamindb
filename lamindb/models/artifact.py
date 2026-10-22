@@ -2943,6 +2943,29 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
         return artifact
 
     @classmethod
+    def from_folder(
+        cls,
+        path: AnyPathStr,
+        *,
+        schema: Schema,
+        key: str | None = None,
+        description: str | None = None,
+        run: Run | None = None,
+        revises: Artifact | None = None,
+    ) -> Artifact:
+        """Create one schema-validated folder artifact, without saving it.
+
+        Unlike :meth:`from_dir`, this preserves the entire directory as one
+        artifact. The folder schema maps relative paths to child schemas.
+        Validation is read-only and requires local data.
+        """
+        from lamindb.curators import FolderCurator
+
+        return FolderCurator(path, schema)._prepare_artifact(
+            key=key, description=description, run=run, revises=revises
+        )
+
+    @classmethod
     def from_dir(
         cls,
         path: AnyPathStr,
@@ -2956,6 +2979,8 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
             If you have a high number of files (several 100k) and don't want to
             track them individually, create a single :class:`~lamindb.Artifact` via
             ``Artifact(path)`` for them. See, e.g., :doc:`docs:rxrx`.
+            To validate a directory's contents and register it as one artifact,
+            use :meth:`from_folder`.
 
         Args:
             path: Source path of folder.
@@ -3526,6 +3551,11 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
 
                 artifact = ln.Artifact("./myfile.csv", key="myfile.parquet").save()
         """
+        folder_curator = getattr(self, "_folder_curator", None)
+        if folder_curator is not None:
+            folder_curator._validate_for_save(self)
+            self.schema = folder_curator._schema
+            self.otype = "Folder"
         if (
             not self._state.adding
             # skip on is_latest change
@@ -3793,6 +3823,9 @@ class Artifact(SQLRecord, IsVersioned, TracksRun, TracksUpdates):
             del self._curator
             # just annotates this artifact
             curator.save_artifact()
+        if folder_curator is not None:
+            folder_curator._annotate_artifact(self)
+            del self._folder_curator
         if hasattr(self, "_external_features"):
             del self._external_features
         if hasattr(self, "_local_filepath"):

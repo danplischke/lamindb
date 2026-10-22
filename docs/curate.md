@@ -69,6 +69,53 @@ Think of schemas as rules that define what valid data should look like.
 
 <!-- #endregion -->
 
+### Folder schemas
+
+A folder can be one dataset containing several independently structured objects.
+Use `Schema(otype="Folder", slots={relative_path: child_schema})` to validate those
+objects and register the directory as one artifact. Each declared path is required.
+Set `maximal_set=True` to reject undeclared files; otherwise additional files are
+stored but their content is not validated.
+
+Child schemas select an existing curator by `otype`, not by file extension.
+Supported object types are `DataFrame` (also the default when `otype` is unset),
+`AnnData`, `MuData`, `SpatialData`, `tiledbsoma`, and `dict`. Their existing loaders
+and optional dependencies determine which storage formats can be read. For
+example, an AnnData schema can validate H5AD or AnnData-compatible Zarr, and a
+table schema can validate Parquet, CSV or TSV. A child schema's `suffix`, when
+specified, additionally restricts the storage format.
+
+Directory-backed objects such as Zarr count as one declared child, including
+their internal files. Nested annotations are recorded using path-qualified
+slots, such as `expression.zarr::obs` and `expression.zarr::var`.
+
+```{eval-rst}
+.. literalinclude:: scripts/curate_folder.py
+   :language: python
+```
+
+For a constructor returning an unsaved artifact, use
+`ln.Artifact.from_folder(path, schema=folder_schema, key="my-study").save()`.
+Unlike `Artifact.from_dir()`, neither entry point registers individual child
+artifacts.
+
+Folder validation is read-only: it does not standardize or rewrite the source,
+and child schemas requesting value coercion are rejected. Errors identify the
+failing child path. Validation runs again before saving; if the content has
+changed since artifact construction, create a fresh artifact from the current
+directory rather than saving stale content statistics.
+
+Only local directories are supported. Explicitly cache a remote folder first,
+then pass the local path returned by `artifact.cache()` to the folder curator.
+Symlinks, wildcard paths, optional children, nested folder schemas and cross-file
+constraints are not supported. In particular, independently valid sample and
+expression objects do not establish that their sample IDs match.
+
+Content validation is performed by `FolderCurator` and `Artifact.from_folder()`;
+passing a schema to the generic `Artifact(path, schema=...)` constructor is not a
+substitute. Create a separate schema record for a changed contract rather than
+mutating a schema that already validates existing artifacts.
+
 ### Flexible schema
 
 Use when: You want to validate those columns whose names match feature names in your `Feature` registry.

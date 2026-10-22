@@ -66,6 +66,23 @@ NUMBER_TYPE = "num"
 DICT_KEYS_TYPE = type({}.keys())  # type: ignore
 
 
+def validate_folder_slots(slots: dict[str, Schema]) -> None:
+    """Validate exact relative paths used by a folder schema."""
+    if not slots:
+        raise InvalidArgument("Folder schemas require at least one path slot.")
+    for slot in slots:
+        if (
+            not isinstance(slot, str)
+            or not slot
+            or slot.startswith("/")
+            or any(character in slot for character in "\\:*?[]\x00")
+            or any(part in {"", ".", "..", "__external__"} for part in slot.split("/"))
+        ):
+            raise InvalidArgument(f"Invalid folder slot path: {slot!r}")
+        if any(slot.startswith(f"{other}/") for other in slots if other != slot):
+            raise InvalidArgument(f"Overlapping folder slot path: {slot!r}")
+
+
 def validate_features(features: list[SQLRecord]) -> SQLRecord:
     """Validate and return feature type."""
     try:
@@ -468,6 +485,8 @@ class Schema(SQLRecord, HasType, CanCurate, TracksRun, TracksUpdates):
         features: `list[SQLRecord] | list[tuple[Feature, dict]] | None = None` Feature
             records, e.g., `[Feature(...), Feature(...)]` or features with their config, e.g., `[Feature(...).with_config(optional=True)]`.
         slots: `dict[str, Schema] | None = None` A dictionary mapping slot names to :class:`~lamindb.Schema` objects to create a _composite_ schema.
+            For `otype="Folder"`, slots are required relative paths to child objects.
+            Set `maximal_set=True` to reject undeclared files.
         name: `str | None = None` Name of the schema.
         description: `str | None = None` Description of the schema.
         itype: `str | None = None` Feature identifier type to validate against, e.g., `ln.Feature` or `bt.Gene.ensembl_gene_id`.
@@ -993,6 +1012,16 @@ class Schema(SQLRecord, HasType, CanCurate, TracksRun, TracksUpdates):
         n_features: int | None,
         optional_features_manual: list[Feature] | None = None,
     ) -> tuple[list[Feature], dict[str, Any], list[Feature], Registry, bool]:
+        if otype == "Folder":
+            validate_folder_slots(slots)
+            if features or index is not None or itype is not None or coerce:
+                raise InvalidArgument(
+                    "Folder schemas use path slots, not features, an index, itype or coercion."
+                )
+            if not minimal_set or ordered_set:
+                raise InvalidArgument(
+                    "Folder schemas require minimal_set=True and ordered_set=False."
+                )
         suffix = validate_schema_suffix(suffix)
         optional_features = []
         record_fields: dict[str, str] = {}
@@ -1169,6 +1198,9 @@ class Schema(SQLRecord, HasType, CanCurate, TracksRun, TracksUpdates):
             )
             slots_hash = hash_string(":".join(slots_list_for_hashing))
             list_for_hashing.append(f"{HASH_CODE['slots_hash']}={slots_hash}")
+        if otype == "Folder":
+            # Other object types historically do not affect schema identity.
+            list_for_hashing.append("otype=Folder")
 
         if is_type:
             validated_kwargs["hash"] = None

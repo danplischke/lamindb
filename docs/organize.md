@@ -40,6 +40,16 @@ In this scenario, save the entire directory as a single artifact:
 ln.Artifact("./folder_abc", key="folder_abc").save()
 ```
 
+To validate the contents of a directory before registering it as one artifact,
+use `ln.Artifact.from_folder("./folder_abc", schema=folder_schema).save()`.
+A folder schema maps relative child paths to their own schemas, including
+structured directory-backed objects such as AnnData Zarr. See
+[folder schemas](curate.md#folder-schemas).
+
+This differs from `Artifact.from_dir()`, which creates separate artifacts for
+the files, and from a `Collection`, which groups independently registered
+artifacts.
+
 :::
 
 ## Via relationships in the database
